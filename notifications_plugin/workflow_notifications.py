@@ -11,6 +11,9 @@ _previous_states = {}
 
 def check_workflow_state_change(doc, method):
 	"""Store the previous workflow state before update"""
+	print(f"🔍 [NOTIFICATIONS PLUGIN] Checking workflow state for {doc.doctype} {doc.name}")
+	frappe.logger().info(f"[NOTIFICATIONS PLUGIN] validate hook called for {doc.doctype} {doc.name}")
+	
 	# This runs in validate, so we get the state from DB before changes
 	if doc.name and frappe.db.exists(doc.doctype, doc.name):
 		key = f"{doc.doctype}:{doc.name}"
@@ -22,6 +25,7 @@ def check_workflow_state_change(doc, method):
 			state_field = workflow.workflow_state_field
 			previous_state = frappe.db.get_value(doc.doctype, doc.name, state_field)
 			_previous_states[key] = previous_state
+			print(f"📋 [NOTIFICATIONS PLUGIN] Stored previous state '{previous_state}' for {doc.doctype} {doc.name} (field: {state_field})")
 		else:
 			# Fallback to common field names
 			previous_state = frappe.db.get_value(
@@ -32,21 +36,31 @@ def check_workflow_state_change(doc, method):
 			)
 			if previous_state:
 				_previous_states[key] = previous_state.get("workflow_state") or previous_state.get("status")
+				print(f"📋 [NOTIFICATIONS PLUGIN] Stored previous state '{_previous_states[key]}' (fallback) for {doc.doctype} {doc.name}")
 			else:
 				_previous_states[key] = None
+				print(f"📋 [NOTIFICATIONS PLUGIN] No previous state found for {doc.doctype} {doc.name}")
 	else:
 		# New document
 		key = f"{doc.doctype}:{doc.name}"
 		_previous_states[key] = None
+		print(f"📋 [NOTIFICATIONS PLUGIN] New document - no previous state for {doc.doctype} {doc.name}")
 
 
 def handle_workflow_transition(doc, method):
 	"""Handle workflow state transitions and trigger notifications"""
+	print(f"🚀 [NOTIFICATIONS PLUGIN] on_update hook called for {doc.doctype} {doc.name}")
+	frappe.logger().info(f"[NOTIFICATIONS PLUGIN] on_update hook called for {doc.doctype} {doc.name}")
+	
 	try:
 		# Get workflow document first to know which field to check
 		workflow = get_workflow_for_doctype(doc.doctype)
 		if not workflow:
+			print(f"⚠️ [NOTIFICATIONS PLUGIN] No workflow found for {doc.doctype}")
+			frappe.logger().info(f"[NOTIFICATIONS PLUGIN] No workflow found for {doc.doctype}")
 			return
+		
+		print(f"✅ [NOTIFICATIONS PLUGIN] Found workflow '{workflow.name}' for {doc.doctype}")
 		
 		# Get the workflow state field name
 		state_field = workflow.workflow_state_field
@@ -57,26 +71,55 @@ def handle_workflow_transition(doc, method):
 		# Get previous state from stored value
 		key = f"{doc.doctype}:{doc.name}"
 		previous_state = _previous_states.get(key)
+		was_new_document = (previous_state is None)
+		
+		print(f"📊 [NOTIFICATIONS PLUGIN] State check - Previous: '{previous_state}', Current: '{current_state}' (field: {state_field})")
+		print(f"📊 [NOTIFICATIONS PLUGIN] Was new document: {was_new_document}")
 		
 		# If not in cache, get from database (fallback)
 		if previous_state is None and doc.name and frappe.db.exists(doc.doctype, doc.name):
-			previous_state = frappe.db.get_value(doc.doctype, doc.name, state_field)
+			db_previous_state = frappe.db.get_value(doc.doctype, doc.name, state_field)
+			print(f"📊 [NOTIFICATIONS PLUGIN] Got previous state from DB: '{db_previous_state}'")
+			
+			# If this was a new document (None in cache) and DB has a state,
+			# check if it's different from current. If same, it means document was just created
+			# with this state, so treat as initial transition
+			if was_new_document and db_previous_state == current_state:
+				# Document was just created with this state - treat as initial transition
+				previous_state = None  # Keep as None to indicate initial state
+				print(f"📊 [NOTIFICATIONS PLUGIN] New document with initial state '{current_state}' - treating as transition from None")
+			else:
+				previous_state = db_previous_state
 		
 		# Check if state actually changed
 		if not current_state:
+			print(f"⚠️ [NOTIFICATIONS PLUGIN] No current state found, skipping")
 			return
-			
-		if current_state == previous_state:
+		
+		# For new documents, if we have a current state, treat it as a transition from None
+		# For existing documents, only proceed if state actually changed
+		if not was_new_document and current_state == previous_state:
+			print(f"⚠️ [NOTIFICATIONS PLUGIN] State unchanged ({current_state}), skipping")
 			return
 		
 		# Log for debugging
-		frappe.logger().info(f"Workflow state change detected: {doc.doctype} {doc.name} from {previous_state} to {current_state} (field: {state_field})")
+		print(f"🎯 [NOTIFICATIONS PLUGIN] ⭐ WORKFLOW STATE CHANGE DETECTED ⭐")
+		print(f"   Document: {doc.doctype} - {doc.name}")
+		print(f"   Previous State: {previous_state}")
+		print(f"   Current State: {current_state}")
+		print(f"   Field: {state_field}")
+		frappe.logger().info(f"[NOTIFICATIONS PLUGIN] ⭐ WORKFLOW STATE CHANGE DETECTED ⭐ {doc.doctype} {doc.name} from {previous_state} to {current_state} (field: {state_field})")
 		
 		# Get recipients and send notifications directly via code
+		print(f"👥 [NOTIFICATIONS PLUGIN] Getting recipients for {doc.doctype} {doc.name}...")
 		recipients = get_notification_recipients(doc, workflow, current_state, previous_state)
 		
+		print(f"👥 [NOTIFICATIONS PLUGIN] Found {len(recipients)} recipients: {recipients}")
+		frappe.logger().info(f"[NOTIFICATIONS PLUGIN] Recipients for {doc.doctype} {doc.name}: {recipients}")
+		
 		if recipients:
-			frappe.logger().info(f"Sending notifications to {len(recipients)} recipients")
+			print(f"📤 [NOTIFICATIONS PLUGIN] Sending notifications to {len(recipients)} recipients...")
+			frappe.logger().info(f"[NOTIFICATIONS PLUGIN] Sending notifications to {len(recipients)} recipients")
 			send_workflow_notifications(
 				doc=doc,
 				workflow=workflow,
@@ -84,9 +127,11 @@ def handle_workflow_transition(doc, method):
 				previous_state=previous_state,
 				recipients=recipients
 			)
-			frappe.logger().info(f"Notifications sent successfully")
+			print(f"✅ [NOTIFICATIONS PLUGIN] Notifications sent successfully!")
+			frappe.logger().info(f"[NOTIFICATIONS PLUGIN] Notifications sent successfully")
 		else:
-			frappe.logger().info(f"No recipients found for {doc.doctype} {doc.name}")
+			print(f"⚠️ [NOTIFICATIONS PLUGIN] No recipients found for {doc.doctype} {doc.name}")
+			frappe.logger().info(f"[NOTIFICATIONS PLUGIN] No recipients found for {doc.doctype} {doc.name}")
 		
 		# Clear stored state
 		if key in _previous_states:
@@ -106,9 +151,15 @@ def get_workflow_for_doctype(doctype):
 			limit=1
 		)
 		if workflow:
-			return frappe.get_doc("Workflow", workflow[0].name)
+			# Load the workflow document with all child tables (transitions, states)
+			workflow_doc = frappe.get_doc("Workflow", workflow[0].name)
+			# Ensure child tables are loaded
+			if hasattr(workflow_doc, 'transitions'):
+				print(f"🔍 [NOTIFICATIONS PLUGIN] Workflow '{workflow_doc.name}' loaded with {len(workflow_doc.transitions)} transitions")
+			return workflow_doc
 		return None
-	except Exception:
+	except Exception as e:
+		print(f"❌ [NOTIFICATIONS PLUGIN] Error loading workflow: {str(e)}")
 		return None
 
 
@@ -132,21 +183,36 @@ def get_notification_recipients(doc, workflow, current_state, previous_state):
 	"""Get all recipients who should receive notifications"""
 	recipients = set()
 	
-	# 1. Add initiator (the person who created the document)
-	initiator = doc.get("owner") or frappe.session.user
-	if initiator:
-		recipients.add(initiator)
-	
-	# 2. Get recipients from workflow transitions (allowed roles)
-	transition_recipients = get_transition_recipients(doc, workflow, current_state, previous_state)
-	recipients.update(transition_recipients)
-	
-	# 3. Get recipients from custom_extra_notification_recipients_ child table
-	extra_recipients = get_extra_notification_recipients(doc)
-	recipients.update(extra_recipients)
-	
-	# Filter out None and empty values
-	recipients = {r for r in recipients if r}
+	try:
+		# 1. Add initiator (the person who created the document)
+		initiator = doc.get("owner") or frappe.session.user
+		if initiator:
+			recipients.add(initiator)
+			print(f"👤 [NOTIFICATIONS PLUGIN] Added initiator: {initiator}")
+			frappe.logger().info(f"[NOTIFICATIONS PLUGIN] Added initiator: {initiator}")
+		
+		# 2. Get recipients from workflow transitions (allowed roles)
+		print(f"🔍 [NOTIFICATIONS PLUGIN] About to call get_transition_recipients for state '{current_state}'...")
+		frappe.logger().info(f"[NOTIFICATIONS PLUGIN] About to call get_transition_recipients for state '{current_state}'...")
+		try:
+			transition_recipients = get_transition_recipients(doc, workflow, current_state, previous_state)
+			print(f"🔍 [NOTIFICATIONS PLUGIN] get_transition_recipients returned: {transition_recipients}")
+			frappe.logger().info(f"[NOTIFICATIONS PLUGIN] get_transition_recipients returned: {transition_recipients}")
+			recipients.update(transition_recipients)
+		except Exception as e:
+			print(f"❌ [NOTIFICATIONS PLUGIN] Error in get_transition_recipients: {str(e)}")
+			frappe.log_error(f"Error in get_transition_recipients: {str(e)}", "Workflow Notification Error")
+		
+		# 3. Get recipients from custom_extra_notification_recipients_ child table
+		extra_recipients = get_extra_notification_recipients(doc)
+		recipients.update(extra_recipients)
+		
+		# Filter out None and empty values
+		recipients = {r for r in recipients if r}
+		
+	except Exception as e:
+		print(f"❌ [NOTIFICATIONS PLUGIN] Error in get_notification_recipients: {str(e)}")
+		frappe.log_error(f"Error in get_notification_recipients: {str(e)}", "Workflow Notification Error")
 	
 	return list(recipients)
 
@@ -155,45 +221,66 @@ def get_transition_recipients(doc, workflow, current_state, previous_state):
 	"""Get recipients from workflow transitions based on allowed roles"""
 	recipients = set()
 	
+	print(f"🔍 [NOTIFICATIONS PLUGIN] get_transition_recipients called for state: '{current_state}' in workflow: '{workflow.name}'")
+	
 	try:
-		# Get transitions that lead to the current state
-		# Transitions have from_state and state (to_state)
-		transitions = frappe.get_all(
-			"Workflow Transition",
-			filters={
-				"parent": workflow.name,
-				"state": current_state  # state is the "to" state
-			},
-			fields=["allowed", "role", "state", "action"]
-		)
+		# Get transitions that START FROM the current state
+		# In Workflow Transition (child table of Workflow):
+		# - "state" is the FROM state (current state before transition)
+		# - "next_state" is the TO state (state after transition)
+		# - "allowed" is the role that can make this transition
+		# When we reach a state, we want to notify the roles that can make transitions FROM that state
+		# (i.e., the next approvers/people who need to act on this state)
 		
-		# If no transitions found with state field, try alternative structure
+		# Transitions are stored as a child table in the workflow document
+		# Access them via workflow.transitions (not as separate documents)
+		transitions = []
+		if hasattr(workflow, 'transitions') and workflow.transitions:
+			print(f"🔍 [NOTIFICATIONS PLUGIN] Checking {len(workflow.transitions)} transitions in workflow...")
+			for transition in workflow.transitions:
+				# Check if this transition starts from the current state
+				# (meaning the role in "allowed" can act on documents in the current state)
+				from_state = transition.get("state")
+				if from_state == current_state:
+					transitions.append(transition)
+					next_state = transition.get("next_state")
+					allowed_role = transition.get("allowed")
+					print(f"   ✅ Found transition FROM '{from_state}' -> '{next_state}' (allowed role: {allowed_role})")
+		
+		print(f"🔍 [NOTIFICATIONS PLUGIN] Found {len(transitions)} transitions FROM '{current_state}' (next approvers)")
+		
+		# Fallback: If no transitions found via child table, try querying as separate documents
 		if not transitions:
-			# Try getting all transitions and filter
-			all_transitions = frappe.get_all(
+			print(f"🔍 [NOTIFICATIONS PLUGIN] No transitions found in child table, trying direct query...")
+			transitions = frappe.get_all(
 				"Workflow Transition",
-				filters={"parent": workflow.name},
-				fields=["allowed", "role", "state", "action", "next_state"]
+				filters={
+					"parent": workflow.name,
+					"state": current_state  # state is the FROM state
+				},
+				fields=["allowed", "role", "state", "next_state", "action"]
 			)
-			
-			for trans in all_transitions:
-				# Check if this transition leads to current state
-				to_state = trans.get("state") or trans.get("next_state")
-				if to_state == current_state:
-					transitions.append(trans)
+			print(f"🔍 [NOTIFICATIONS PLUGIN] Direct query found {len(transitions)} transitions")
 		
 		for transition in transitions:
 			# Get role from allowed field or role field
 			role = transition.get("allowed") or transition.get("role")
 			
+			print(f"🔍 [NOTIFICATIONS PLUGIN] Processing transition: {transition.get('state')} -> {transition.get('next_state')}, allowed role: {role}")
+			
 			if role:
 				# Get users with this role, but be careful with Employee role
 				users = get_users_for_role(role, doc)
+				print(f"👥 [NOTIFICATIONS PLUGIN] Found {len(users)} users for role '{role}': {users}")
 				recipients.update(users)
+			else:
+				print(f"⚠️ [NOTIFICATIONS PLUGIN] No role found in transition")
 		
 	except Exception as e:
+		print(f"❌ [NOTIFICATIONS PLUGIN] Error getting transition recipients: {str(e)}")
 		frappe.log_error(f"Error getting transition recipients: {str(e)}", "Workflow Notification Error")
 	
+	print(f"👥 [NOTIFICATIONS PLUGIN] get_transition_recipients returning {len(recipients)} recipients: {recipients}")
 	return recipients
 
 
@@ -254,14 +341,28 @@ def get_extra_notification_recipients(doc):
 		# Check if the child table exists
 		child_table_field = "custom_extra_notification_recipients_"
 		
+		print(f"🔍 [NOTIFICATIONS PLUGIN] Checking for extra notification recipients in '{child_table_field}'...")
+		
 		if hasattr(doc, child_table_field) and doc.get(child_table_field):
-			for row in doc.get(child_table_field):
+			child_table_rows = doc.get(child_table_field)
+			print(f"📋 [NOTIFICATIONS PLUGIN] Found {len(child_table_rows)} rows in extra notification recipients table")
+			
+			for row in child_table_rows:
 				role = row.get("role")
 				if role:
+					print(f"👥 [NOTIFICATIONS PLUGIN] Processing extra recipient role: {role}")
 					users = get_users_for_role(role, doc)
+					print(f"👥 [NOTIFICATIONS PLUGIN] Found {len(users)} users for extra role '{role}': {users}")
 					recipients.update(users)
+				else:
+					print(f"⚠️ [NOTIFICATIONS PLUGIN] Row in extra notification recipients has no role field")
+		else:
+			print(f"ℹ️ [NOTIFICATIONS PLUGIN] No extra notification recipients table found or empty")
+		
+		print(f"✅ [NOTIFICATIONS PLUGIN] Extra notification recipients: {len(recipients)} total users")
 		
 	except Exception as e:
+		print(f"❌ [NOTIFICATIONS PLUGIN] Error getting extra notification recipients: {str(e)}")
 		frappe.log_error(f"Error getting extra notification recipients: {str(e)}", "Workflow Notification Error")
 	
 	return recipients
@@ -300,21 +401,48 @@ def send_workflow_notifications(doc, workflow, current_state, previous_state, re
 			doc_link
 		)
 		
-		# Filter recipients - remove current user and get their emails
+		# Filter recipients - get their emails
+		# Note: We don't skip the current user if they're the initiator or in the workflow recipients
+		# because they should be notified of workflow progression
+		initiator = doc.get("owner") or frappe.session.user
 		notification_user_emails = []
 		for recipient in recipients:
+			# Only skip if recipient is current user AND they're not the initiator
+			# (initiator should always be notified of workflow progression)
 			if recipient == frappe.session.user:
-				continue
+				if recipient == initiator:
+					print(f"✅ [NOTIFICATIONS PLUGIN] Including current user (initiator): {recipient}")
+				else:
+					print(f"⏭️ [NOTIFICATIONS PLUGIN] Skipping current user (not initiator): {recipient}")
+					continue
 			
-			# Get user email for notification system
-			user_email = frappe.db.get_value("User", recipient, "email")
+			# Check if recipient is already an email or a user ID
+			user_email = None
+			if "@" in str(recipient):
+				# Looks like an email, verify it's a valid user email
+				user_email = frappe.db.get_value("User", {"email": recipient, "enabled": 1}, "email")
+				if user_email:
+					print(f"📧 [NOTIFICATIONS PLUGIN] Recipient is email: {user_email}")
+				else:
+					print(f"⚠️ [NOTIFICATIONS PLUGIN] Email {recipient} not found for enabled user, skipping")
+			else:
+				# Assume it's a user ID, get the email
+				user_email = frappe.db.get_value("User", {"name": recipient, "enabled": 1}, "email")
+				if user_email:
+					print(f"👤 [NOTIFICATIONS PLUGIN] User ID {recipient} -> Email: {user_email}")
+				else:
+					print(f"⚠️ [NOTIFICATIONS PLUGIN] User ID {recipient} not found or disabled, skipping")
+			
 			if user_email:
 				notification_user_emails.append(user_email)
+		
+		print(f"📬 [NOTIFICATIONS PLUGIN] Final notification emails: {notification_user_emails}")
 		
 		if notification_user_emails:
 			try:
 				# Create system notification using Frappe's notification system
 				# This will show as a popup in the notification center
+				# The link field makes the notification clickable to open the document
 				notification_doc = {
 					"type": "Alert",
 					"document_type": doc.doctype,
@@ -322,9 +450,14 @@ def send_workflow_notifications(doc, workflow, current_state, previous_state, re
 					"subject": subject,
 					"from_user": frappe.session.user,
 					"email_content": message,
+					"link": doc_link,  # This makes the notification clickable
 				}
+				print(f"📤 [NOTIFICATIONS PLUGIN] Calling enqueue_create_notification with:")
+				print(f"   Users: {notification_user_emails}")
+				print(f"   Doc: {notification_doc}")
 				enqueue_create_notification(notification_user_emails, notification_doc)
-				frappe.logger().info(f"System notifications created for {len(notification_user_emails)} users")
+				print(f"✅ [NOTIFICATIONS PLUGIN] enqueue_create_notification called successfully")
+				frappe.logger().info(f"[NOTIFICATIONS PLUGIN] System notifications created for {len(notification_user_emails)} users")
 				
 				# Also try push notifications if enabled
 				try:
