@@ -1,6 +1,7 @@
 import frappe
 from frappe import _
 from frappe.utils import get_fullname, now_datetime
+from frappe.desk.doctype.notification_log.notification_log import enqueue_create_notification
 import json
 
 
@@ -297,26 +298,42 @@ def send_workflow_notifications(doc, workflow, current_state, previous_state, re
 		except Exception as e:
 			frappe.log_error(f"Error sending email: {str(e)}", "Workflow Notification Error")
 		
-		# Also create system notifications for each recipient user
-		for recipient in recipients:
-			if recipient == frappe.session.user:
-				continue
-			
+		# Create system notifications for all recipients
+		notification_users = [r for r in recipients if r != frappe.session.user]
+		
+		if notification_users:
 			try:
-				# Create system notification
-				frappe.publish_realtime(
-					event="notification",
-					message={
-						"type": "alert",
-						"title": subject,
-						"message": message,
-						"indicator": "blue"
-					},
-					user=recipient
-				)
+				# Create system notification using Frappe's notification system
+				notification_doc = {
+					"type": "Alert",
+					"document_type": doc.doctype,
+					"document_name": doc.name,
+					"subject": subject,
+					"from_user": frappe.session.user,
+					"email_content": message,
+				}
+				enqueue_create_notification(notification_users, notification_doc)
+				
+				# Also send realtime event for immediate popup notification
+				for user in notification_users:
+					try:
+						frappe.publish_realtime(
+							event="show_notification",
+							message={
+								"type": "alert",
+								"indicator": "blue",
+								"message": _("Workflow transition: {0} moved to {1}").format(
+									doc.name, current_state
+								),
+								"title": subject,
+							},
+							user=user
+						)
+					except Exception:
+						pass  # Don't fail if realtime fails
 			except Exception as e:
 				frappe.log_error(
-					f"Error creating system notification for {recipient}: {str(e)}",
+					f"Error creating system notifications: {str(e)}",
 					"Workflow Notification Error"
 				)
 		
