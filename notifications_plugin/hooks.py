@@ -137,13 +137,12 @@ app_license = "mit"
 # ---------------
 # Hook on document methods and events
 
-# doc_events = {
-# 	"*": {
-# 		"on_update": "method",
-# 		"on_cancel": "method",
-# 		"on_trash": "method"
-# 	}
-# }
+doc_events = {
+	"*": {
+		"on_update": "notifications_plugin.workflow_notifications.handle_workflow_transition",
+		"validate": "notifications_plugin.workflow_notifications.check_workflow_state_change",
+	}
+}
 
 # Scheduled Tasks
 # ---------------
