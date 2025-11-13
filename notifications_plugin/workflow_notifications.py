@@ -14,17 +14,26 @@ def check_workflow_state_change(doc, method):
 	# This runs in validate, so we get the state from DB before changes
 	if doc.name and frappe.db.exists(doc.doctype, doc.name):
 		key = f"{doc.doctype}:{doc.name}"
-		# Get previous state from database
-		previous_state = frappe.db.get_value(
-			doc.doctype, 
-			doc.name, 
-			["workflow_state", "status"],
-			as_dict=True
-		)
-		if previous_state:
-			_previous_states[key] = previous_state.get("workflow_state") or previous_state.get("status")
+		
+		# Get workflow to find the correct field name
+		workflow = get_workflow_for_doctype(doc.doctype)
+		if workflow:
+			# Use the workflow's state field
+			state_field = workflow.workflow_state_field
+			previous_state = frappe.db.get_value(doc.doctype, doc.name, state_field)
+			_previous_states[key] = previous_state
 		else:
-			_previous_states[key] = None
+			# Fallback to common field names
+			previous_state = frappe.db.get_value(
+				doc.doctype, 
+				doc.name, 
+				["workflow_state", "status"],
+				as_dict=True
+			)
+			if previous_state:
+				_previous_states[key] = previous_state.get("workflow_state") or previous_state.get("status")
+			else:
+				_previous_states[key] = None
 	else:
 		# New document
 		key = f"{doc.doctype}:{doc.name}"
@@ -34,24 +43,24 @@ def check_workflow_state_change(doc, method):
 def handle_workflow_transition(doc, method):
 	"""Handle workflow state transitions and send notifications"""
 	try:
-		# Get current state from document
-		current_state = doc.get("workflow_state") or doc.get("status")
+		# Get workflow document first to know which field to check
+		workflow = get_workflow_for_doctype(doc.doctype)
+		if not workflow:
+			return
 		
-		# Get previous state from stored value or database
+		# Get the workflow state field name
+		state_field = workflow.workflow_state_field
+		
+		# Get current state from document using the correct field
+		current_state = doc.get(state_field)
+		
+		# Get previous state from stored value
 		key = f"{doc.doctype}:{doc.name}"
 		previous_state = _previous_states.get(key)
 		
 		# If not in cache, get from database (fallback)
 		if previous_state is None and doc.name and frappe.db.exists(doc.doctype, doc.name):
-			# This shouldn't happen, but just in case
-			db_state = frappe.db.get_value(
-				doc.doctype,
-				doc.name,
-				["workflow_state", "status"],
-				as_dict=True
-			)
-			if db_state:
-				previous_state = db_state.get("workflow_state") or db_state.get("status")
+			previous_state = frappe.db.get_value(doc.doctype, doc.name, state_field)
 		
 		# Check if state actually changed
 		if not current_state:
@@ -61,15 +70,7 @@ def handle_workflow_transition(doc, method):
 			return
 		
 		# Log for debugging
-		frappe.logger().info(f"Workflow state change detected: {doc.doctype} {doc.name} from {previous_state} to {current_state}")
-		
-		# Get workflow document
-		workflow = get_workflow_for_doctype(doc.doctype)
-		if not workflow:
-			frappe.logger().info(f"No workflow found for {doc.doctype}")
-			return
-		
-		frappe.logger().info(f"Found workflow: {workflow.name} for {doc.doctype}")
+		frappe.logger().info(f"Workflow state change detected: {doc.doctype} {doc.name} from {previous_state} to {current_state} (field: {state_field})")
 		
 		# Get recipients
 		recipients = get_notification_recipients(doc, workflow, current_state, previous_state)
