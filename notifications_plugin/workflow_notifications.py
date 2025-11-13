@@ -41,7 +41,7 @@ def check_workflow_state_change(doc, method):
 
 
 def handle_workflow_transition(doc, method):
-	"""Handle workflow state transitions and send notifications"""
+	"""Handle workflow state transitions and trigger notifications"""
 	try:
 		# Get workflow document first to know which field to check
 		workflow = get_workflow_for_doctype(doc.doctype)
@@ -72,14 +72,21 @@ def handle_workflow_transition(doc, method):
 		# Log for debugging
 		frappe.logger().info(f"Workflow state change detected: {doc.doctype} {doc.name} from {previous_state} to {current_state} (field: {state_field})")
 		
-		# Get recipients
+		# Trigger Frappe's Notification system using "Method" event
+		# This will trigger all Notification records with event="Method" and method="workflow_state_changed"
+		# Users need to create Notification records in the system for each doctype/workflow
+		try:
+			doc.run_notifications("workflow_state_changed")
+			frappe.logger().info(f"Triggered notifications for {doc.doctype} {doc.name}")
+		except Exception as e:
+			frappe.logger().error(f"Error triggering notifications: {str(e)}")
+		
+		# Also send direct notifications for backward compatibility
+		# This ensures notifications work even if Notification records aren't set up
 		recipients = get_notification_recipients(doc, workflow, current_state, previous_state)
 		
-		frappe.logger().info(f"Recipients for {doc.doctype} {doc.name}: {recipients}")
-		
 		if recipients:
-			# Send notifications
-			frappe.logger().info(f"Sending notifications to {len(recipients)} recipients")
+			frappe.logger().info(f"Also sending direct notifications to {len(recipients)} recipients")
 			send_workflow_notifications(
 				doc=doc,
 				workflow=workflow,
@@ -87,9 +94,6 @@ def handle_workflow_transition(doc, method):
 				previous_state=previous_state,
 				recipients=recipients
 			)
-			frappe.logger().info(f"Notifications sent successfully")
-		else:
-			frappe.logger().info(f"No recipients found for {doc.doctype} {doc.name}")
 		
 		# Clear stored state
 		if key in _previous_states:
