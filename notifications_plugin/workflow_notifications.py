@@ -300,40 +300,21 @@ def send_workflow_notifications(doc, workflow, current_state, previous_state, re
 			doc_link
 		)
 		
-		# Filter recipients - remove current user and invalid emails
-		valid_recipients = []
+		# Filter recipients - remove current user and get their emails
+		notification_user_emails = []
 		for recipient in recipients:
 			if recipient == frappe.session.user:
 				continue
 			
-			# Get user email
+			# Get user email for notification system
 			user_email = frappe.db.get_value("User", recipient, "email")
-			if user_email and frappe.utils.validate_email_address(user_email, throw=False):
-				valid_recipients.append(user_email)
+			if user_email:
+				notification_user_emails.append(user_email)
 		
-		if not valid_recipients:
-			return
-		
-		# Send email using frappe.sendmail
-		try:
-			frappe.sendmail(
-				recipients=valid_recipients,
-				subject=subject,
-				message=message,
-				reference_doctype=doc.doctype,
-				reference_name=doc.name,
-				delayed=False,
-				now=True
-			)
-		except Exception as e:
-			frappe.log_error(f"Error sending email: {str(e)}", "Workflow Notification Error")
-		
-		# Create system notifications for all recipients
-		notification_users = [r for r in recipients if r != frappe.session.user]
-		
-		if notification_users:
+		if notification_user_emails:
 			try:
 				# Create system notification using Frappe's notification system
+				# This will show as a popup in the notification center
 				notification_doc = {
 					"type": "Alert",
 					"document_type": doc.doctype,
@@ -342,7 +323,8 @@ def send_workflow_notifications(doc, workflow, current_state, previous_state, re
 					"from_user": frappe.session.user,
 					"email_content": message,
 				}
-				enqueue_create_notification(notification_users, notification_doc)
+				enqueue_create_notification(notification_user_emails, notification_doc)
+				frappe.logger().info(f"System notifications created for {len(notification_user_emails)} users")
 			except Exception as e:
 				frappe.log_error(
 					f"Error creating system notifications: {str(e)}",
