@@ -343,24 +343,6 @@ def send_workflow_notifications(doc, workflow, current_state, previous_state, re
 					"email_content": message,
 				}
 				enqueue_create_notification(notification_users, notification_doc)
-				
-				# Also send realtime event for immediate popup toast notification
-				for user in notification_users:
-					try:
-						# Send toast notification via realtime
-						frappe.publish_realtime(
-							event="msgprint",
-							message={
-								"message": _("Workflow transition: {0} moved from {1} to {2}").format(
-									doc.name, previous_state or _("Initial"), current_state
-								),
-								"indicator": "blue",
-								"title": subject,
-							},
-							user=user
-						)
-					except Exception:
-						pass  # Don't fail if realtime fails
 			except Exception as e:
 				frappe.log_error(
 					f"Error creating system notifications: {str(e)}",
