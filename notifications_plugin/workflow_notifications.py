@@ -325,6 +325,34 @@ def send_workflow_notifications(doc, workflow, current_state, previous_state, re
 				}
 				enqueue_create_notification(notification_user_emails, notification_doc)
 				frappe.logger().info(f"System notifications created for {len(notification_user_emails)} users")
+				
+				# Also try push notifications if enabled
+				try:
+					from frappe.push_notification import PushNotification
+					push_notification = PushNotification("notifications_plugin")
+					if push_notification.is_enabled():
+						# Get document link
+						doc_link = frappe.utils.get_url_to_form(doc.doctype, doc.name)
+						
+						# Send push notification to each user
+						for user_email in notification_user_emails:
+							# Get user ID from email
+							user_id = frappe.db.get_value("User", {"email": user_email}, "name")
+							if user_id:
+								push_notification.send_notification_to_user(
+									user_id=user_id,
+									title=subject,
+									body=_("Workflow transition: {0} moved from {1} to {2}").format(
+										doc.name, previous_state or _("Initial"), current_state
+									),
+									link=doc_link
+								)
+				except ImportError:
+					# Push notifications not available, skip
+					pass
+				except Exception as e:
+					# Don't fail if push notifications fail
+					frappe.logger().error(f"Push notification error (non-critical): {str(e)}")
 			except Exception as e:
 				frappe.log_error(
 					f"Error creating system notifications: {str(e)}",
