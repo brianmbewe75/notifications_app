@@ -11,59 +11,97 @@ _previous_states = {}
 
 def check_workflow_state_change(doc, method):
 	"""Store the previous workflow state before update"""
-	print(f"🔍 [NOTIFICATIONS PLUGIN] Checking workflow state for {doc.doctype} {doc.name}")
-	frappe.logger().info(f"[NOTIFICATIONS PLUGIN] validate hook called for {doc.doctype} {doc.name}")
-	
-	# This runs in validate, so we get the state from DB before changes
-	if doc.name and frappe.db.exists(doc.doctype, doc.name):
-		key = f"{doc.doctype}:{doc.name}"
-		
-		# Get workflow to find the correct field name
+	# Early exit: Only process doctypes with workflows
+	# Check workflow existence first before doing ANYTHING else
+	try:
 		workflow = get_workflow_for_doctype(doc.doctype)
-		if workflow:
-			# Use the workflow's state field
-			state_field = workflow.workflow_state_field
-			previous_state = frappe.db.get_value(doc.doctype, doc.name, state_field)
-			_previous_states[key] = previous_state
-			print(f"📋 [NOTIFICATIONS PLUGIN] Stored previous state '{previous_state}' for {doc.doctype} {doc.name} (field: {state_field})")
+	except Exception:
+		# If we can't even check for workflow, skip completely
+		return
+	
+	if not workflow:
+		# No workflow for this doctype, don't even try - exit immediately
+		return
+	
+	try:
+		
+		print(f"🔍 [NOTIFICATIONS PLUGIN] Checking workflow state for {doc.doctype} {doc.name}")
+		frappe.logger().info(f"[NOTIFICATIONS PLUGIN] validate hook called for {doc.doctype} {doc.name}")
+		
+		# This runs in validate, so we get the state from DB before changes
+		if doc.name and frappe.db.exists(doc.doctype, doc.name):
+			key = f"{doc.doctype}:{doc.name}"
+			
+			try:
+				# Use the workflow's state field
+				state_field = workflow.workflow_state_field
+				
+				# Check if the field exists in the doctype before querying
+				meta = frappe.get_meta(doc.doctype)
+				if not meta.has_field(state_field):
+					# Field doesn't exist, try "status" as fallback
+					if meta.has_field("status"):
+						state_field = "status"
+						print(f"⚠️ [NOTIFICATIONS PLUGIN] Workflow field '{workflow.workflow_state_field}' doesn't exist, using 'status' field instead")
+					else:
+						# Neither field exists, skip
+						print(f"⚠️ [NOTIFICATIONS PLUGIN] Neither '{workflow.workflow_state_field}' nor 'status' field exists in {doc.doctype}, skipping")
+						return
+				
+				previous_state = frappe.db.get_value(doc.doctype, doc.name, state_field)
+				_previous_states[key] = previous_state
+				print(f"📋 [NOTIFICATIONS PLUGIN] Stored previous state '{previous_state}' for {doc.doctype} {doc.name} (field: {state_field})")
+			except Exception as e:
+				# If there's an error (like column doesn't exist), just skip silently
+				# Don't log as error since this is expected for doctypes without workflow fields
+				frappe.logger().debug(f"[NOTIFICATIONS PLUGIN] Could not get previous state for {doc.doctype} {doc.name}: {str(e)}")
+				return
 		else:
-			# Fallback to common field names
-			previous_state = frappe.db.get_value(
-				doc.doctype, 
-				doc.name, 
-				["workflow_state", "status"],
-				as_dict=True
-			)
-			if previous_state:
-				_previous_states[key] = previous_state.get("workflow_state") or previous_state.get("status")
-				print(f"📋 [NOTIFICATIONS PLUGIN] Stored previous state '{_previous_states[key]}' (fallback) for {doc.doctype} {doc.name}")
-			else:
-				_previous_states[key] = None
-				print(f"📋 [NOTIFICATIONS PLUGIN] No previous state found for {doc.doctype} {doc.name}")
-	else:
-		# New document
-		key = f"{doc.doctype}:{doc.name}"
-		_previous_states[key] = None
-		print(f"📋 [NOTIFICATIONS PLUGIN] New document - no previous state for {doc.doctype} {doc.name}")
+			# New document
+			key = f"{doc.doctype}:{doc.name}"
+			_previous_states[key] = None
+			print(f"📋 [NOTIFICATIONS PLUGIN] New document - no previous state for {doc.doctype} {doc.name}")
+	except Exception as e:
+		# Catch any unexpected errors and log them, but don't throw
+		frappe.logger().error(f"[NOTIFICATIONS PLUGIN] Unexpected error in check_workflow_state_change for {doc.doctype}: {str(e)}")
+		# Don't re-raise - just return silently
+		return
 
 
 def handle_workflow_transition(doc, method):
 	"""Handle workflow state transitions and trigger notifications"""
-	print(f"🚀 [NOTIFICATIONS PLUGIN] on_update hook called for {doc.doctype} {doc.name}")
-	frappe.logger().info(f"[NOTIFICATIONS PLUGIN] on_update hook called for {doc.doctype} {doc.name}")
+	# Early exit: Only process doctypes with workflows
+	# Check workflow existence first before doing ANYTHING else
+	try:
+		workflow = get_workflow_for_doctype(doc.doctype)
+	except Exception:
+		# If we can't even check for workflow, skip completely
+		return
+	
+	if not workflow:
+		# No workflow for this doctype, don't even try - exit immediately
+		return
 	
 	try:
-		# Get workflow document first to know which field to check
-		workflow = get_workflow_for_doctype(doc.doctype)
-		if not workflow:
-			print(f"⚠️ [NOTIFICATIONS PLUGIN] No workflow found for {doc.doctype}")
-			frappe.logger().info(f"[NOTIFICATIONS PLUGIN] No workflow found for {doc.doctype}")
-			return
+		
+		print(f"🚀 [NOTIFICATIONS PLUGIN] on_update hook called for {doc.doctype} {doc.name}")
+		frappe.logger().info(f"[NOTIFICATIONS PLUGIN] on_update hook called for {doc.doctype} {doc.name}")
 		
 		print(f"✅ [NOTIFICATIONS PLUGIN] Found workflow '{workflow.name}' for {doc.doctype}")
 		
 		# Get the workflow state field name
 		state_field = workflow.workflow_state_field
+		
+		# Check if the field exists, fallback to "status" if not
+		meta = frappe.get_meta(doc.doctype)
+		if not meta.has_field(state_field):
+			if meta.has_field("status"):
+				state_field = "status"
+				print(f"⚠️ [NOTIFICATIONS PLUGIN] Workflow field '{workflow.workflow_state_field}' doesn't exist, using 'status' field instead")
+			else:
+				# Neither field exists, skip
+				print(f"⚠️ [NOTIFICATIONS PLUGIN] Neither '{workflow.workflow_state_field}' nor 'status' field exists in {doc.doctype}, skipping")
+				return
 		
 		# Get current state from document using the correct field
 		current_state = doc.get(state_field)
@@ -78,18 +116,23 @@ def handle_workflow_transition(doc, method):
 		
 		# If not in cache, get from database (fallback)
 		if previous_state is None and doc.name and frappe.db.exists(doc.doctype, doc.name):
-			db_previous_state = frappe.db.get_value(doc.doctype, doc.name, state_field)
-			print(f"📊 [NOTIFICATIONS PLUGIN] Got previous state from DB: '{db_previous_state}'")
-			
-			# If this was a new document (None in cache) and DB has a state,
-			# check if it's different from current. If same, it means document was just created
-			# with this state, so treat as initial transition
-			if was_new_document and db_previous_state == current_state:
-				# Document was just created with this state - treat as initial transition
-				previous_state = None  # Keep as None to indicate initial state
-				print(f"📊 [NOTIFICATIONS PLUGIN] New document with initial state '{current_state}' - treating as transition from None")
-			else:
-				previous_state = db_previous_state
+			try:
+				db_previous_state = frappe.db.get_value(doc.doctype, doc.name, state_field)
+				print(f"📊 [NOTIFICATIONS PLUGIN] Got previous state from DB: '{db_previous_state}'")
+				
+				# If this was a new document (None in cache) and DB has a state,
+				# check if it's different from current. If same, it means document was just created
+				# with this state, so treat as initial transition
+				if was_new_document and db_previous_state == current_state:
+					# Document was just created with this state - treat as initial transition
+					previous_state = None  # Keep as None to indicate initial state
+					print(f"📊 [NOTIFICATIONS PLUGIN] New document with initial state '{current_state}' - treating as transition from None")
+				else:
+					previous_state = db_previous_state
+			except Exception as e:
+				# If we can't get the previous state from DB, just use None
+				print(f"⚠️ [NOTIFICATIONS PLUGIN] Could not get previous state from DB: {str(e)}, using None")
+				previous_state = None
 		
 		# Check if state actually changed
 		if not current_state:
@@ -138,7 +181,11 @@ def handle_workflow_transition(doc, method):
 			del _previous_states[key]
 			
 	except Exception as e:
-		frappe.log_error(f"Error in workflow notification: {str(e)}", "Workflow Notification Error")
+		# Log the error but don't throw - we don't want to break document saves
+		frappe.log_error(f"Error in workflow notification for {doc.doctype} {doc.name}: {str(e)}", "Workflow Notification Error")
+		print(f"❌ [NOTIFICATIONS PLUGIN] Error in workflow notification (non-critical): {str(e)}")
+		# Don't re-raise - return silently to avoid breaking document saves
+		return
 
 
 def get_workflow_for_doctype(doctype):
