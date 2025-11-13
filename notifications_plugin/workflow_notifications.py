@@ -72,21 +72,11 @@ def handle_workflow_transition(doc, method):
 		# Log for debugging
 		frappe.logger().info(f"Workflow state change detected: {doc.doctype} {doc.name} from {previous_state} to {current_state} (field: {state_field})")
 		
-		# Trigger Frappe's Notification system using "Method" event
-		# This will trigger all Notification records with event="Method" and method="workflow_state_changed"
-		# Users need to create Notification records in the system for each doctype/workflow
-		try:
-			doc.run_notifications("workflow_state_changed")
-			frappe.logger().info(f"Triggered notifications for {doc.doctype} {doc.name}")
-		except Exception as e:
-			frappe.logger().error(f"Error triggering notifications: {str(e)}")
-		
-		# Also send direct notifications for backward compatibility
-		# This ensures notifications work even if Notification records aren't set up
+		# Get recipients and send notifications directly via code
 		recipients = get_notification_recipients(doc, workflow, current_state, previous_state)
 		
 		if recipients:
-			frappe.logger().info(f"Also sending direct notifications to {len(recipients)} recipients")
+			frappe.logger().info(f"Sending notifications to {len(recipients)} recipients")
 			send_workflow_notifications(
 				doc=doc,
 				workflow=workflow,
@@ -94,6 +84,9 @@ def handle_workflow_transition(doc, method):
 				previous_state=previous_state,
 				recipients=recipients
 			)
+			frappe.logger().info(f"Notifications sent successfully")
+		else:
+			frappe.logger().info(f"No recipients found for {doc.doctype} {doc.name}")
 		
 		# Clear stored state
 		if key in _previous_states:
@@ -351,17 +344,17 @@ def send_workflow_notifications(doc, workflow, current_state, previous_state, re
 				}
 				enqueue_create_notification(notification_users, notification_doc)
 				
-				# Also send realtime event for immediate popup notification
+				# Also send realtime event for immediate popup toast notification
 				for user in notification_users:
 					try:
+						# Send toast notification via realtime
 						frappe.publish_realtime(
-							event="show_notification",
+							event="msgprint",
 							message={
-								"type": "alert",
-								"indicator": "blue",
-								"message": _("Workflow transition: {0} moved to {1}").format(
-									doc.name, current_state
+								"message": _("Workflow transition: {0} moved from {1} to {2}").format(
+									doc.name, previous_state or _("Initial"), current_state
 								),
+								"indicator": "blue",
 								"title": subject,
 							},
 							user=user
